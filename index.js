@@ -1,5 +1,6 @@
 import express from "express";
 import { MongoClient, ObjectId } from "mongodb";
+import { createRemoteJWKSet, jwtVerify } from "jose";
 import "dotenv/config";
 import cors from "cors";
 
@@ -8,7 +9,6 @@ const port = 5000;
 
 app.use(cors());
 app.use(express.json());
-
 
 const client = new MongoClient(process.env.MONGO_URI);
 
@@ -30,14 +30,52 @@ const db = mongoClient.db("event");
 const eventCollection = db.collection("all-events");
 const joinedEventsCollection = db.collection("joined-events");
 
+const AUTH_JWKS_URL = `${process.env.CLIENT_URL || "http://localhost:3000"}/api/auth/jwks`;
+const JWKS = createRemoteJWKSet(new URL(AUTH_JWKS_URL));
 
+const verifyToken = async (req, res, next) => {
+  const authHeader = req.headers.authorization;
+  if (!authHeader?.startsWith("Bearer ")) {
+    return res.status(401).send({ msg: "Unauthorized!" });
+  }
+  const token = authHeader.slice("Bearer ".length);
+  if (!token) {
+    return res.status(401).send({ msg: "Unauthorized!" });
+  }
 
-app.post("/add-event", async (req, res) => {
   try {
-    const data = req.body;
+    const { payload } = await jwtVerify(token, JWKS);
+
+    if (!payload.email) {
+      return res.status(401).send({ msg: "Unauthorized!" });
+    }
+
+    req.user = payload;
+    next();
+  } catch (error) {
+    console.error("Token verification failed:", error.message);
+    return res.status(401).send({ msg: "Unauthorized!" });
+  }
+};
+
+app.post("/add-event", verifyToken, async (req, res) => {
+  try {
+    const { title, imageUrl, type, location, date, description } = req.body;
+
+    if (!title || !date) {
+      return res.status(400).send({
+        message: "Title and date are required",
+      });
+    }
 
     const result = await eventCollection.insertOne({
-      ...data,
+      title,
+      imageUrl,
+      type,
+      location,
+      date,
+      description,
+      email: req.user.email,
       createdAt: new Date(),
     });
 
@@ -48,7 +86,6 @@ app.post("/add-event", async (req, res) => {
     });
   }
 });
-
 
 app.get("/events", async (req, res) => {
   try {
@@ -62,19 +99,10 @@ app.get("/events", async (req, res) => {
   }
 });
 
-app.get("/my-events", async (req, res) => {
+app.get("/my-events", verifyToken, async (req, res) => {
   try {
-    const { email } = req.query;
-
-    if (!email) {
-      return res.status(400).send({
-        message: "Email is required",
-      });
-    }
-
-    const events = await db
-      .collection("events")
-      .find({ email: email })
+    const events = await eventCollection
+      .find({ email: req.user.email })
       .sort({ createdAt: -1 })
       .toArray();
 
@@ -88,20 +116,11 @@ app.get("/my-events", async (req, res) => {
   }
 });
 
-
-app.put("/events/:id", async (req, res) => {
+app.put("/events/:id", verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
 
-    const {
-      requesterEmail,
-      title,
-      imageUrl,
-      type,
-      location,
-      date,
-      description,
-    } = req.body;
+    const { title, imageUrl, type, location, date, description } = req.body;
 
     if (!ObjectId.isValid(id)) {
       return res.status(400).send({
@@ -109,16 +128,10 @@ app.put("/events/:id", async (req, res) => {
       });
     }
 
-    if (!requesterEmail) {
-      return res.status(401).send({
-        message: "User email is required",
-      });
-    }
-
     const result = await eventCollection.updateOne(
       {
         _id: new ObjectId(id),
-        email: requesterEmail,
+        email: req.user.email,
       },
       {
         $set: {
@@ -129,7 +142,7 @@ app.put("/events/:id", async (req, res) => {
           date,
           description,
         },
-      }
+      },
     );
 
     if (result.matchedCount === 0) {
@@ -151,11 +164,9 @@ app.put("/events/:id", async (req, res) => {
   }
 });
 
-
-app.delete("/events/:id", async (req, res) => {
+app.delete("/events/:id", verifyToken, async (req, res) => {
   try {
     const { id } = req.params;
-    const { requesterEmail } = req.body;
 
     if (!ObjectId.isValid(id)) {
       return res.status(400).send({
@@ -163,15 +174,9 @@ app.delete("/events/:id", async (req, res) => {
       });
     }
 
-    if (!requesterEmail) {
-      return res.status(400).send({
-        message: "Email is required",
-      });
-    }
-
     const result = await eventCollection.deleteOne({
       _id: new ObjectId(id),
-      email: requesterEmail, 
+      email: req.user.email,
     });
 
     if (result.deletedCount === 0) {
@@ -184,7 +189,6 @@ app.delete("/events/:id", async (req, res) => {
       success: true,
       message: "Event deleted successfully",
     });
-
   } catch (error) {
     console.error(error);
 
@@ -194,14 +198,27 @@ app.delete("/events/:id", async (req, res) => {
   }
 });
 
-
-
-app.post("/join-event", async (req, res) => {
+app.post("/join-event", verifyToken, async (req, res) => {
   try {
-    const eventData = req.body;
+  
+    const { eventId, eventTitle, imageUrl, description, location, date, type } =
+      req.body;
+
+    if (!eventId) {
+      return res.status(400).send({
+        message: "eventId is required",
+      });
+    }
 
     const joinInfo = {
-      ...eventData,
+      eventId,
+      eventTitle,
+      imageUrl,
+      description,
+      location,
+      date,
+      type,
+      userEmail: req.user.email,
       joinedAt: new Date(),
     };
 
@@ -215,14 +232,10 @@ app.post("/join-event", async (req, res) => {
   }
 });
 
-
-
-app.get("/joined-events/:email", async (req, res) => {
+app.get("/joined-events/:email", verifyToken, async (req, res) => {
   try {
-    const email = req.params.email;
-
     const result = await joinedEventsCollection
-      .find({ userEmail: email })
+      .find({ userEmail: req.user.email })
       .sort({ joinedAt: -1 })
       .toArray();
 
@@ -234,20 +247,10 @@ app.get("/joined-events/:email", async (req, res) => {
   }
 });
 
-
-
-app.get("/joined-events", async (req, res) => {
+app.get("/joined-events", verifyToken, async (req, res) => {
   try {
-    const email = req.query.email;
-
-    if (!email) {
-      return res.status(400).send({
-        message: "Email is required",
-      });
-    }
-
     const result = await joinedEventsCollection
-      .find({ userEmail: email })
+      .find({ userEmail: req.user.email })
       .sort({ joinedAt: -1 })
       .toArray();
 
@@ -259,12 +262,9 @@ app.get("/joined-events", async (req, res) => {
   }
 });
 
-
-
-app.delete("/joined-events/:eventId", async (req, res) => {
+app.delete("/joined-events/:eventId", verifyToken, async (req, res) => {
   try {
     const { eventId } = req.params;
-    const { userEmail } = req.body;
 
     if (!eventId) {
       return res.status(400).send({
@@ -272,15 +272,9 @@ app.delete("/joined-events/:eventId", async (req, res) => {
       });
     }
 
-    if (!userEmail) {
-      return res.status(400).send({
-        message: "Email is required",
-      });
-    }
-
     const result = await joinedEventsCollection.deleteOne({
       eventId,
-      userEmail,
+      userEmail: req.user.email,
     });
 
     if (result.deletedCount === 0) {
@@ -302,11 +296,9 @@ app.delete("/joined-events/:eventId", async (req, res) => {
   }
 });
 
-
 app.get("/", (req, res) => {
   res.send("Hello World!");
 });
-
 
 app.listen(port, () => {
   console.log(`Example app listening on port ${port}`);
