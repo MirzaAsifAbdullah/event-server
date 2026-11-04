@@ -238,19 +238,18 @@ app.get("/joined-events", verifyToken, async (req, res) => {
 // Cancel Joined Event
 app.delete("/joined-events/:eventId", verifyToken, async (req, res) => {
   try {
-    const { eventId } = req.params;
-
-    if (!eventId) {
-      return res.status(400).send({ message: "Event ID is required" });
-    }
+    const eventId = req.params.eventId;
+    const email = req.user.email;
 
     const result = await joinedEventsCollection.deleteOne({
-      eventId,
-      userEmail: req.user.email,
+      eventId: eventId,
+      userEmail: email,
     });
 
     if (result.deletedCount === 0) {
-      return res.status(404).send({ message: "Registration not found" });
+      return res.status(404).send({
+        message: "Registration not found",
+      });
     }
 
     res.send({
@@ -258,11 +257,12 @@ app.delete("/joined-events/:eventId", verifyToken, async (req, res) => {
       message: "Successfully canceled",
     });
   } catch (error) {
-    console.error("Error canceling join:", error);
-    res.status(500).send({ message: "Failed to cancel join" });
+    console.log(error);
+    res.status(500).send({
+      message: "Failed to cancel join",
+    });
   }
 });
-
 // Home Route
 app.get("/", (req, res) => {
   res.send("Hello World!");
