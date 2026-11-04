@@ -28,6 +28,8 @@ const db = mongoClient.db("event");
 
 const eventCollection = db.collection("all-events");
 const joinedEventsCollection = db.collection("joined-events");
+const completedEventsCollection =
+  db.collection("completed-events");
 
 const AUTH_JWKS_URL = `${process.env.CLIENT_URL || "http://localhost:3000"}/api/auth/jwks`;
 const JWKS = createRemoteJWKSet(new URL(AUTH_JWKS_URL));
@@ -260,6 +262,21 @@ app.delete("/joined-events/:eventId", verifyToken, async (req, res) => {
     console.log(error);
     res.status(500).send({
       message: "Failed to cancel join",
+    });
+  }
+});
+
+// Gallery data get
+app.get("/completed-events", async (req, res) => {
+  try {
+    const result = await completedEventsCollection
+      .find({ status: "completed" })
+      .toArray();
+
+    res.send(result);
+  } catch (error) {
+    res.status(500).send({
+      message: "Failed to fetch completed events",
     });
   }
 });
